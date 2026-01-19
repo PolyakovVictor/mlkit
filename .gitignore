@@ -1,0 +1,49 @@
+tinygrad/
+# Byte-code files
+*.pyc
+__pycache__/
+[cython]*.c
+
+# Output/build directories
+build/
+dist/
+*.egg-info/
+
+# Virtual environment
+venv/
+.venv/
+env/
+.env/
+
+# Editor/IDE-specific files
+.idea/  # Pycharm
+.vscode/ # VS Code
+*.swp # vim
+
+# OS-specific files
+.DS_Store # macOS
+
+# Dependencies
+# Pip
+pip-wheel-metadata/
+wheels/
+# tox
+.tox/
+# Poetry
+.poetry/
+
+# Test coverage
+.coverage
+.coverage.*
+
+# Sphinx documentation
+docs/_build/
+
+# Jupyter Notebook files
+.ipynb_checkpoints
+
+# Misc
+*.log
+npm-debug.log*
+pids/
+*.pid
