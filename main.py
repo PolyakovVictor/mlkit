@@ -1,6 +1,7 @@
 import json
 import struct
 import regex as re
+import numpy as np
 
 from load import Load
 from safetensors.numpy import load_file
@@ -109,6 +110,26 @@ class Tokenizer():
 
 
 
+import numpy as np
+
+class LayerNorm:
+    def __init__(self, weight, bias):
+        self.weight = weight  # np.array
+        self.bias   = bias
+
+    def __call__(self, x):
+        mean = np.mean(x, axis=-1, keepdims=True)
+        var  = np.var (x, axis=-1, keepdims=True)
+        return self.weight * (x - mean) / np.sqrt(var + 1e-5) + self.bias
+
+
+class GPT2Minimal:
+    def __init__(self, weights: dict, n_embd=768, n_head=12, n_layer=12):
+        self.wte   = weights["wte.weight"]
+        self.wpe   = weights["wpe.weight"]
+        self.ln_f  = LayerNorm(weights["ln_f.weight"], weights["ln_f.bias"])
+
+
 if __name__ == '__main__':
     model_size = 'gpt2'
     url = f'https://huggingface.co/openai-community/{model_size}/resolve/main/model.safetensors'
@@ -133,4 +154,6 @@ if __name__ == '__main__':
         print(type(merges_file), type(vocab_file))
         T = Tokenizer(merges_bytes=merges_file, vocab=vocab_file)       
         T('HELLO')
-    # res = load_safetensors(path=p)
+        text = "Hello"
+        ids = T(text)
+        print(ids)
