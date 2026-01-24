@@ -35,6 +35,7 @@ def load_safetensors(path):
 def load_gpt2_weights(path):
     tensors = {}
     with safe_open(path, framework="numpy") as f:
+        print(f.keys())
         for key in f.keys():
             tensors[key] = f.get_tensor(key)
     return tensors
@@ -123,11 +124,134 @@ class LayerNorm:
         return self.weight * (x - mean) / np.sqrt(var + 1e-5) + self.bias
 
 
+
+class GPT2Block:
+    def __init__(self, weights: dict, n_embd: int, n_head: int):
+        self.n_head = n_head
+        self.head_dim = n_embd // n_head
+        
+        # Attention
+        self.c_attn_w = weights['attn_c_attn_w']   # [n_embd, 3*n_embd]
+        self.c_attn_b = weights['attn_c_attn_b']   # [3*n_embd]
+        self.c_proj_w = weights['attn_c_proj_w']   # [n_embd, n_embd]
+        self.c_proj_b = weights['attn_c_proj_b']
+        
+        self.c_fc_w   = weights['mlp_c_fc_w']      # [n_embd, 4*n_embd]
+        self.c_fc_b   = weights['mlp_c_fc_b']
+        self.c_proj_w = weights['mlp_c_proj_w']    # [4*n_embd, n_embd]
+        self.c_proj_b = weights['mlp_c_proj_b']
+
+        # Attention
+        self.attn_c_proj_w = weights['attn_c_proj_w']   # (768, 768)
+        self.attn_c_proj_b = weights['attn_c_proj_b']
+
+        # MLP
+        self.mlp_c_fc_w    = weights['mlp_c_fc_w']      # (768, 3072)
+        self.mlp_c_fc_b    = weights['mlp_c_fc_b']
+        self.mlp_c_proj_w  = weights['mlp_c_proj_w']    # (3072, 768)
+        self.mlp_c_proj_b  = weights['mlp_c_proj_b']
+        
+        # LayerNorms
+        self.ln_1 = LayerNorm(weights['ln_1_w'], weights['ln_1_b'])
+        self.ln_2 = LayerNorm(weights['ln_2_w'], weights['ln_2_b'])
+
+    def __call__(self, x):
+        batch, seq_len, _ = x.shape
+
+        x_norm = self.ln_1(x)
+        qkv = np.matmul(x_norm, self.c_attn_w) + self.c_attn_b
+        q, k, v = np.split(qkv, 3, axis=-1)
+        
+        q = q.reshape(batch, seq_len, self.n_head, self.head_dim).transpose(0,2,1,3)
+        k = k.reshape(batch, seq_len, self.n_head, self.head_dim).transpose(0,2,1,3)
+        v = v.reshape(batch, seq_len, self.n_head, self.head_dim).transpose(0,2,1,3)
+        
+        att = np.matmul(q, k.transpose(0,1,3,2)) / np.sqrt(self.head_dim)
+        
+        causal_mask = np.tril(np.ones((seq_len, seq_len), dtype=bool))
+        att = np.where(causal_mask[None,None,:,:], att, -1e9)
+        
+        att = np.exp(att) / (np.sum(np.exp(att), axis=-1, keepdims=True) + 1e-10)
+        
+        y = np.matmul(att, v)
+        y = y.transpose(0,2,1,3).reshape(batch, seq_len, -1)
+        
+        y = np.matmul(y, self.attn_c_proj_w) + self.attn_c_proj_b
+        x = x + y
+
+        x_norm = self.ln_2(x)
+        h = np.matmul(x_norm, self.mlp_c_fc_w) + self.mlp_c_fc_b          # → 3072
+        
+        h = 0.5 * h * (1 + np.tanh(np.sqrt(2 / np.pi) * (h + 0.044715 * h**3)))
+        
+        y = np.matmul(h, self.mlp_c_proj_w) + self.mlp_c_proj_b          # 3072 → 768
+        
+        x = x + y
+
+        return x
+
+
 class GPT2Minimal:
-    def __init__(self, weights: dict, n_embd=768, n_head=12, n_layer=12):
-        self.wte   = weights["wte.weight"]
-        self.wpe   = weights["wpe.weight"]
-        self.ln_f  = LayerNorm(weights["ln_f.weight"], weights["ln_f.bias"])
+    def __init__(self, weights: dict):
+        self.n_embd   = 768
+        self.n_head   = 12
+        self.n_layer  = 12
+        self.n_ctx    = 1024
+
+        self.wte = weights['wte.weight']
+        self.wpe = weights['wpe.weight']
+
+        self.ln_f = LayerNorm(weights['ln_f.weight'],
+                               weights['ln_f.bias'])
+
+        self.blocks = []
+
+        for i in range(self.n_layer):
+            block_weights = {
+                'attn_c_attn_w': weights[f'h.{i}.attn.c_attn.weight'],
+                'attn_c_attn_b': weights[f'h.{i}.attn.c_attn.bias'],
+                'attn_c_proj_w': weights[f'h.{i}.attn.c_proj.weight'],
+                'attn_c_proj_b': weights[f'h.{i}.attn.c_proj.bias'],
+
+                'mlp_c_fc_w'   : weights[f'h.{i}.mlp.c_fc.weight'],
+                'mlp_c_fc_b'   : weights[f'h.{i}.mlp.c_fc.bias'],
+                'mlp_c_proj_w' : weights[f'h.{i}.mlp.c_proj.weight'],
+                'mlp_c_proj_b' : weights[f'h.{i}.mlp.c_proj.bias'],
+
+                'ln_1_w'       : weights[f'h.{i}.ln_1.weight'],
+                'ln_1_b'       : weights[f'h.{i}.ln_1.bias'],
+                'ln_2_w'       : weights[f'h.{i}.ln_2.weight'],
+                'ln_2_b'       : weights[f'h.{i}.ln_2.bias'],
+            }
+            self.blocks.append(GPT2Block(block_weights, self.n_embd, self.n_head))
+
+    def forward(self, idx):
+        batch, seq_len = idx.shape
+
+        tok_emb = self.wte[idx]         # [1, seq, n_embd]
+        pos_emb = self.wpe[np.arange(seq_len)]   # [seq, n_embd]
+        x = tok_emb + pos_emb
+
+        for block in self.blocks:
+            x = block(x)
+
+        x = self.ln_f(x)
+
+        logits = np.dot(x, self.wte.T)  # [1, seq, vocab]
+
+        return logits
+
+    def generate(self, prompt_ids, max_new_tokens=50, temperature=1.0):
+        ids = np.array([prompt_ids])   # [1, len]
+
+        for _ in range(max_new_tokens):
+            logits = self.forward(ids[:, -self.n_ctx:])
+            logits = logits[:, -1, :] / temperature
+
+            next_id = np.argmax(logits, axis=-1)
+            ids = np.concatenate([ids, next_id[:, None]], axis=-1)
+
+        return ids.flatten().tolist()
 
 
 if __name__ == '__main__':
@@ -137,6 +261,9 @@ if __name__ == '__main__':
     url_vocab = f'https://huggingface.co/openai-community/{model_size}/resolve/main/vocab.json'
     url_config = f'https://huggingface.co/openai-community/{model_size}/resolve/main/config.json'
     p = Load.fetch_by_url(url=url, filename='model.safetensors')
+    tensors = load_file(p).keys()
+    for t in tensors:
+        print(t)
     config_path = Load.fetch_by_url(url=url_config, filename='config.json')
     merges_path = Load.fetch_by_url(url=url_merges, filename='merges.txt')
     vocab_path = Load.fetch_by_url(url=url_vocab, filename='vocab.json')
@@ -157,3 +284,17 @@ if __name__ == '__main__':
         text = "Hello"
         ids = T(text)
         print(ids)
+
+        weights = load_gpt2_weights(p)
+
+        model = GPT2Minimal(weights)
+
+        text = "Hello world"
+        ids = T(text)
+        print("Input ids:", ids)
+
+        generated_ids = model.generate(ids, max_new_tokens=40)
+        print("Generated ids:", generated_ids)
+
+        itos = {v: k for k, v in T.vocab.items()}
+        print("".join(itos.get(i, '?') for i in generated_ids))
