@@ -4,6 +4,7 @@ import regex as re
 
 from load import Load
 from safetensors.numpy import load_file
+from safetensors import safe_open
 
 # https://huggingface.co/%7Bmodel_size%7D/resolve/main/pytorch_model.bin%20gpt2-medium
 
@@ -30,6 +31,12 @@ def load_safetensors(path):
             
         return tensors
 
+def load_gpt2_weights(path):
+    tensors = {}
+    with safe_open(path, framework="numpy") as f:
+        for key in f.keys():
+            tensors[key] = f.get_tensor(key)
+    return tensors
 
 class Tokenizer():
     def __init__(self, merges_bytes: bytes, vocab: dict) -> None:
@@ -41,7 +48,6 @@ class Tokenizer():
     def _parse_merges(self, merges_bytes: bytes):
         lines = merges_bytes.decode('utf-8').split('\n')
         lines = [l for l in lines if l and not l.startswith('#')]
-        
         merges = {}
         for idx, line in enumerate(lines):
             pair = tuple(line.split())
@@ -63,21 +69,24 @@ class Tokenizer():
     def bpe(self, token):
         word = list(token)
         
-        while len(word) > 1:
+        while len(word) >= 2:
             pairs = [(word[i], word[i+1]) for i in range(len(word) - 1)]
+            min_rank = float('inf')
+            min_pair = None
             
-            print('hz', self.merges.get(pairs[1], float('inf')), self.merges.get(pairs[0], float('inf')) )
-            print('hz2 :', min(pairs, key=lambda p: self.merges.get(p, float('inf'))))
-            print('pairs: ', pairs)
-            bigram = min(pairs, key=lambda p: self.merges.get(p, float('inf')))
+            for p in pairs:
+                rank = self.merges.get(p, float('inf'))
+                if rank < min_rank:
+                    min_rank = rank
+                    min_pair = p
             
-            if bigram not in self.merges:
+            if min_pair is None or min_rank == float('inf'):
                 break
-            
+
             new_word = []
             i = 0
             while i < len(word):
-                if i < len(word) - 1 and (word[i], word[i+1]) == bigram:
+                if i < len(word) - 1 and (word[i], word[i+1]) == min_pair:
                     new_word.append(word[i] + word[i+1])
                     i += 2
                 else:
