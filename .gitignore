@@ -47,3 +47,8 @@ docs/_build/
 npm-debug.log*
 pids/
 *.pid
+
+nanoGPT/
+model.safetensors
+merges.txt
+vocab.json
